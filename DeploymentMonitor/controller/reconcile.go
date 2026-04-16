@@ -177,6 +177,44 @@ func (dwc *DeploymentWatcherController) handleAdd(dep *v1.Deployment) error {
 
 }
 
+// handleUpdate is called on every subsequent reconcile for an already-watched deployment.
+// It writes the current AvailableReplicas count to the shared path.
+// This is idempotent — overwriting the same value is harmless.
+func (dwc *DeploymentWatcherController) handleUpdate(dep *appsv1.Deployment) error {
+	namespace := dep.Namespace
+	name := dep.Name
+	available := dep.Status.AvailableReplicas
+
+	klog.Infof("[UPDATE] Deployment %s/%s: availableReplicas=%d", namespace, name, available)
+
+	if err := writeReplicaCount(namespace, name, available); err != nil {
+		return fmt.Errorf("[UPDATE] writing replica count for %s/%s: %w", namespace, name, err)
+	}
+
+	return nil
+}
+
+// handleDelete cleans up when a deployment is removed.
+// It deletes the replica-count file from the shared path.
+func (dwc *DeploymentWatcherController) handleDelete(namespace, name string) error {
+	klog.Infof("[DELETE] Deployment %s/%s: removing shared state", namespace, name)
+
+	filePath := replicaCountPath(namespace, name)
+	err := os.Remove(filePath)
+	if err != nil && !os.IsNotExist(err) {
+		// IsNotExist is fine — maybe we never wrote it (e.g. controller restarted)
+		return fmt.Errorf("[DELETE] removing file %q: %w", filePath, err)
+	}
+
+	klog.Infof("[DELETE] Cleaned up %q", filePath)
+
+	// Optionally remove the per-namespace directory if now empty
+	nsDir := filepath.Join(SharedBasePath, namespace)
+	_ = os.Remove(nsDir) // ignore error — directory may still have other deployments
+
+	return nil
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 // hasVolume returns true if the pod spec already contains a volume with the given name.
